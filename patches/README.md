@@ -31,3 +31,4 @@ git am /path/to/contest2026_416_dianzinongmingong/patches/0004-*.patch
 | 4 | `0004-vendor_bes-boot-into-zhaoxi_ui.patch` | `vendor/bes` | Change rcS.ap to launch zhaoxi_ui instead of lvgldemo |
 | 5 | `0005-packages_ai_agent-add-daily-cron-schedule.patch` | `packages/ai_agent` | Add `daily` (fixed time-of-day) schedule kind to the cron engine and `cron_add` tool |
 | 6 | `0006-packages_ai_agent-write-network-status-file.patch` | `packages/ai_agent` | Write `/data/ai_agent/NET_STATUS` on network state change for UI polling |
+| 7 | `0007-packages_ai_agent-fix-cron-socket-and-mimo-thinking.patch` | `packages/ai_agent` | Fix cron-thread socket churn (network mempool assert) and disable MiMo chain-of-thought |
