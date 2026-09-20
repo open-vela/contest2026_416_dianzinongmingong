@@ -32,7 +32,7 @@ cron_add {
   "message": "该喝水了！",
   "channel": "system",
   "action": "write_file",
-  "action_args": "{\"path\":\"/data/ai_agent/REMINDER.md\",\"content\":\"提醒：该喝水了！\"}"
+  "action_args": "{\"path\":\"/data/ai_agent/REMINDER.md\",\"content\":\"该喝水了！\"}"
 }
 ```
 重复提醒（schedule_type = "every"，需提供正数 interval_s，单位秒）：
@@ -44,12 +44,12 @@ cron_add {
   "message": "该喝水了！",
   "channel": "system",
   "action": "write_file",
-  "action_args": "{\"path\":\"/data/ai_agent/REMINDER.md\",\"content\":\"提醒：该喝水了！\"}"
+  "action_args": "{\"path\":\"/data/ai_agent/REMINDER.md\",\"content\":\"该喝水了！\"}"
 }
 ```
 
 ## 注意事项
-- REMINDER.md 的 content 必须是**单行紧凑文本、不含 markdown 标题**：UI 只读第一个非空行，且建议以"提醒："开头
+- REMINDER.md 的 content 必须是**单行紧凑文本、不含 markdown 标题**：UI 只读第一个非空行，，且**不要自带"提醒："前缀**
 - 时间表达要转换为具体 epoch（at_epoch）或间隔秒数（interval_s）
 - 一次性任务用 schedule_type="at"（框架没有 "once"），且 at_epoch 必须是未来时间
 - at 类型任务触发后默认自动删除（delete_after_run 默认为 true）
