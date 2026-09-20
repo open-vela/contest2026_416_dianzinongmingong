@@ -6,6 +6,7 @@
 #include <nuttx/config.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sys/boardctl.h>
@@ -79,6 +80,10 @@ static int circle_fit_w(int cy, int h, int want)
 #define NET_FILE_ALT       DATA_DIR_FALLBACK "/NET_STATUS"
 #define TASKS_FILE         DATA_DIR_PRIMARY "/TASKS.md"
 #define TASKS_FILE_ALT     DATA_DIR_FALLBACK "/TASKS.md"
+#define CHAT_IN_FILE       DATA_DIR_PRIMARY "/CHAT_IN.txt"
+#define CHAT_IN_FILE_ALT   DATA_DIR_FALLBACK "/CHAT_IN.txt"
+#define CHAT_OUT_FILE      DATA_DIR_PRIMARY "/CHAT_OUT.txt"
+#define CHAT_OUT_FILE_ALT  DATA_DIR_FALLBACK "/CHAT_OUT.txt"
 
 /* ── Static UI elements ─────────────────────────────────────── */
 static lv_obj_t *g_clock_label;
@@ -114,6 +119,13 @@ static char g_last_net[128];
 static char g_chat_log_buf[1024];
 static int g_last_tasks = -1;
 
+/* Chat bridge with ai_agent (files, since the UI does not link the agent):
+ * we write "<seq>\n<text>" to CHAT_IN.txt and poll CHAT_OUT.txt for the
+ * reply carrying the same seq. */
+static long g_chat_seq;          /* last request id we sent */
+static long g_chat_reply_seq;    /* last reply id we displayed */
+static bool g_chat_pending;      /* waiting for a reply */
+
 /* ── Forward declarations ───────────────────────────────────── */
 static void build_home_tile(lv_obj_t *tile);
 static void build_chat_tile(lv_obj_t *tile);
@@ -146,6 +158,28 @@ static bool read_first_line(const char *primary, const char *fallback,
 {
     if (read_first_line_from(primary, buf, buflen)) return true;
     if (fallback != NULL && read_first_line_from(fallback, buf, buflen)) return true;
+    if (buflen > 0) buf[0] = '\0';
+    return false;
+}
+
+/* Read the whole (small) file into buf, NUL-terminated, trailing CR/LF
+ * trimmed.  Used for the two-line chat bridge files. */
+static bool read_whole_file(const char *primary, const char *fallback,
+                            char *buf, size_t buflen)
+{
+    const char *paths[2] = { primary, fallback };
+    for (int i = 0; i < 2; i++) {
+        if (paths[i] == NULL) continue;
+        FILE *fp = fopen(paths[i], "r");
+        if (fp == NULL) continue;
+        size_t n = fread(buf, 1, buflen - 1, fp);
+        fclose(fp);
+        buf[n] = '\0';
+        while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) {
+            buf[--n] = '\0';
+        }
+        return true;
+    }
     if (buflen > 0) buf[0] = '\0';
     return false;
 }
@@ -242,8 +276,18 @@ static void poll_timer_cb(lv_timer_t *timer)
             snprintf(rbuf, sizeof(rbuf), "提醒：%s", buf);
             lv_label_set_text(g_reminder_label, rbuf);
         }
+        /* The home tile's bell card shows the reminder itself (its title is
+         * already "提醒"); the pending-task count lives on the settings tile. */
+        if (g_task_label) {
+            lv_label_set_text(g_task_label, buf);
+            lv_obj_set_style_text_color(g_task_label, COLOR_ORANGE, 0);
+        }
     } else {
         if (g_reminder_label) lv_label_set_text(g_reminder_label, "提醒：暂无");
+        if (g_task_label) {
+            lv_label_set_text(g_task_label, "暂无提醒");
+            lv_obj_set_style_text_color(g_task_label, COLOR_TEXT_DIM, 0);
+        }
     }
 
     /* Network status */
@@ -283,21 +327,43 @@ static void poll_timer_cb(lv_timer_t *timer)
     }
     /* Absent file: keep last known state, never crash */
 
-    /* Pending tasks */
+    /* Pending tasks — shown on the settings tile; the home bell card
+     * carries the reminder text instead (see above). */
     int tasks = count_pending_tasks();
     if (tasks != g_last_tasks) {
         g_last_tasks = tasks;
         LV_LOG_USER("DIAG FILE tasks=%d", tasks);
     }
-    if (g_task_label) {
-        char tbuf[32];
-        snprintf(tbuf, sizeof(tbuf), "%d 条待办", tasks);
-        lv_label_set_text(g_task_label, tbuf);
-    }
     if (g_set_task_label) {
         char tbuf[32];
         snprintf(tbuf, sizeof(tbuf), "待办任务：%d 条", tasks);
         lv_label_set_text(g_set_task_label, tbuf);
+    }
+
+    /* Chat reply from the agent (file bridge).  CHAT_OUT.txt holds
+     * "<seq>\n<reply>"; we only show replies newer than the last one. */
+    if (g_chat_pending) {
+        char raw[512];
+        if (read_whole_file(CHAT_OUT_FILE, CHAT_OUT_FILE_ALT, raw, sizeof(raw))) {
+            char *end = NULL;
+            long seq = strtol(raw, &end, 10);
+            if (end != raw && seq > g_chat_reply_seq) {
+                const char *reply = end;
+                while (*reply == '\n' || *reply == '\r' || *reply == ' ') reply++;
+                if (*reply != '\0') {
+                    size_t cur = strlen(g_chat_log_buf);
+                    size_t add = strlen(reply);
+                    if (cur + add + 8 < sizeof(g_chat_log_buf)) {
+                        strcat(g_chat_log_buf, "\n< ");
+                        strcat(g_chat_log_buf, reply);
+                    }
+                    if (g_chat_log) lv_label_set_text(g_chat_log, g_chat_log_buf);
+                    g_chat_reply_seq = seq;
+                    g_chat_pending = false;
+                    LV_LOG_USER("DIAG CHAT rx seq=%ld text=%s", seq, reply);
+                }
+            }
+        }
     }
 
     /* Uptime (since app start) */
@@ -446,8 +512,8 @@ static void create_info_cards(lv_obj_t *parent)
     lv_obj_align(task_title, LV_ALIGN_TOP_LEFT, 0, 0);
 
     g_task_label = lv_label_create(task_card);
-    lv_label_set_text(g_task_label, "0 条待办");
-    lv_obj_set_style_text_color(g_task_label, COLOR_TEXT, 0);
+    lv_label_set_text(g_task_label, "暂无提醒");
+    lv_obj_set_style_text_color(g_task_label, COLOR_TEXT_DIM, 0);
     lv_obj_set_style_text_font(g_task_label, &zhaoxi_font_20, 0);
     lv_obj_set_width(g_task_label, card_w - 16);
     lv_label_set_long_mode(g_task_label, LV_LABEL_LONG_DOT);
@@ -483,6 +549,24 @@ static void chat_send(void)
         }
         if (g_chat_log) lv_label_set_text(g_chat_log, g_chat_log_buf);
         lv_textarea_set_text(g_chat_ta, "");
+
+        /* Hand the question to the agent through the file bridge.  The
+         * agent replies into CHAT_OUT.txt, picked up by poll_timer_cb. */
+        g_chat_seq++;
+        const char *path = CHAT_IN_FILE;
+        FILE *fp = fopen(path, "w");
+        if (fp == NULL) {
+            path = CHAT_IN_FILE_ALT;
+            fp = fopen(path, "w");
+        }
+        if (fp != NULL) {
+            fprintf(fp, "%ld\n%s\n", g_chat_seq, txt);
+            fclose(fp);
+            g_chat_pending = true;
+            LV_LOG_USER("DIAG CHAT tx seq=%ld text=%s", g_chat_seq, txt);
+        } else {
+            LV_LOG_USER("DIAG CHAT tx failed (no file)");
+        }
     }
 }
 
